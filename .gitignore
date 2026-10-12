@@ -1,0 +1,23 @@
+# Keil MDK 编译产物
+OBJ/
+*.o
+*.crf
+*.d
+*.axf
+*.hex
+*.lst
+*.map
+*.htm
+*.dep
+*.iex
+*.lnp
+
+# Keil 用户界面与调试配置
+USER/*.uvguix.*
+USER/JLinkLog.txt
+USER/JLinkSettings.ini
+USER/EventRecorderStub.scvd
+
+# 系统生成文件
+Thumbs.db
+Desktop.ini

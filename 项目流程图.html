@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数控 BUCK 可调电源 - 项目流程图</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", -apple-system, sans-serif;
+    margin: 0; padding: 32px 24px 64px;
+    background: #f5f6f8; color: #1f2329;
+    line-height: 1.6;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14161a; color: #e6e8eb; }
+    .card { background: #1e2126; border-color: #2e3238; }
+    .note { background: #241f14; border-color: #4a3f1a; }
+    .tag { background: #26303c; color: #9ecbff; }
+  }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: #6b7280; font-size: 14px; margin-bottom: 28px; }
+  h2 { font-size: 19px; margin-top: 40px; border-left: 4px solid #3b82f6; padding-left: 10px; }
+  .card {
+    background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
+    padding: 18px 22px; margin: 16px 0; overflow-x: auto;
+  }
+  .note {
+    background: #fffbe6; border: 1px solid #f0e0a8; border-radius: 10px;
+    padding: 14px 18px; margin: 18px 0; font-size: 14px;
+  }
+  .tag {
+    display: inline-block; background: #eef2ff; color: #3b5bdb;
+    border-radius: 6px; padding: 1px 8px; margin: 2px 3px; font-size: 13px;
+  }
+  .unused { background: #f3f4f6; color: #9ca3af; }
+  .mermaid { text-align: center; }
+</style>
+</head>
+<body>
+<h1>数控 BUCK 降压可调电源</h1>
+<div class="sub">STM32F103C8T6 · 基于 Keil 工程《工程文件.uvprojx》实际编译的文件梳理</div>
+
+<div class="note">
+<b>项目一句话说明：</b>这是一个用 STM32 做 <b>PWM 输出 + ADC 反馈</b>的<b>降压（BUCK）可调直流电源</b>。
+它用 ADC 采集输出电压/电流，用 TIM1 输出 20kHz PWM 驱动 BUCK 电路，通过简单的“比较-步进”稳压算法把输出电压稳到目标值（Target_V），
+带 OLED 显示、4 个按键、继电器/芯片使能开关，以及过压(13V)/过流(3A)保护。
+</div>
+
+<h2>一、系统整体结构（用到的模块）</h2>
+<div class="card">
+<div class="mermaid">
+flowchart LR
+    subgraph IN["输入"]
+        KEY["4个按键<br/>SW / ADD / REDUCE / CHOICE<br/>(PB12~PB15)"]
+        VS["电压采样 PA0"]
+        IS["电流采样 PA1"]
+    end
+
+    subgraph MCU["STM32F103C8T6"]
+        MAIN["main() 主状态机"]
+        ADC["ADC1 + DMA1<br/>连续采集2路<br/>ADC_ConvertedValue[2]"]
+        T3["TIM3 定时中断<br/>采样累加求平均"]
+        T1["TIM1 PWM 20kHz<br/>稳压控制中断"]
+    end
+
+    subgraph OUT["输出"]
+        PWM["PWM → PA8<br/>BUCK 降压电路"]
+        RLY["继电器 PA10"]
+        EN["芯片使能 PA9"]
+        OLED["OLED 屏<br/>电压/电流/目标/状态"]
+    end
+
+    KEY --> MAIN
+    VS --> ADC
+    IS --> ADC
+    ADC --> T3
+    T3 --> MAIN
+    MAIN --> T1
+    T1 --> PWM
+    MAIN --> RLY
+    MAIN --> EN
+    MAIN --> OLED
+</div>
+</div>
+
+<h2>二、主程序流程（main 状态机）</h2>
+<div class="card">
+<div class="mermaid">
+flowchart TD
+    A(["上电复位"]) --> B["系统时钟初始化<br/>SystemInit()"]
+    B --> C["进入 main()"]
+    C --> D["外设初始化：<br/>延时 / TIM1-PWM / ADC+DMA<br/>继电器 / 按键 / TIM3 / OLED"]
+
+    D --> E[/"待机 loop"/]
+    E --> E1["输出关闭 SW_OFF SD_OFF<br/>pid_mode=0, sw_status=0"]
+    E1 --> E2["清屏并显示参数界面<br/>canshu_view()"]
+    E2 --> F{"扫描按键<br/>SW 键按下?"}
+
+    F -->|"否"| G["OLED 实时刷新<br/>电压 / 电流 / 目标电压"]
+    G --> F
+
+    F -->|"是"| H["接通芯片使能 SD_ON<br/>闭合继电器 SW_ON<br/>延时 500ms"]
+
+    H --> I[/"运行 while(1)"/]
+    I --> J{"扫描按键<br/>key = KEY_Scan()"}
+
+    J -->|"SW 键"| K["启动稳压<br/>pid_mode=1, sw_status=1"]
+    J -->|"ADD 键"| L["目标电压 Target_V + 0.1V"]
+    J -->|"REDUCE 键"| M["目标电压 Target_V - 0.1V"]
+    J -->|"CHOICE 键"| N["关闭输出 SW_OFF SD_OFF<br/>pid_mode=0"]
+    J -->|"无按键"| O["OLED 刷新"]
+
+    K --> P{"过压/过流检测<br/>DC_V>13V 或 DC_I>3A ?"}
+    L --> P
+    M --> P
+    O --> P
+
+    P -->|"否"| J
+    P -->|"是"| Q["保护动作：<br/>断开继电器 + 芯片失能<br/>protect_status=1"]
+    N --> E
+    Q --> E
+</div>
+</div>
+
+<h2>三、两个后台中断（与主循环并行运行）</h2>
+<div class="card">
+<div class="mermaid">
+flowchart TD
+    subgraph T3INT["TIM3 定时中断（约每 5ms 一次）"]
+        A1["读取 ADC 采样值<br/>v_out += 电压<br/>i_out += 电流"]
+        A1 --> A2{"已累计 300 次<br/>（约 1.5s）?"}
+        A2 -->|"否"| A4["结束，等待下次"]
+        A2 -->|"是"| A3["求平均并乘校准系数<br/>更新 DC_V、DC_I<br/>累加清零"]
+        A3 --> A4
+    end
+
+    subgraph T1INT["TIM1 更新中断（20kHz，每 20 次 ≈ 1kHz 控制一次）"]
+        B0{"pid_mode==1<br/>且 protect_status==0 ?"}
+        B0 -->|"否"| B6["buck_pwm = 0<br/>关闭 PWM 输出"]
+        B0 -->|"是"| B1["ADC 采样电压 与<br/>目标电压 比较"]
+        B1 --> B2{"采样 < 目标 ?"}
+        B2 -->|"是"| B3["buck_pwm + 1"]
+        B2 -->|"否"| B4["buck_pwm - 1"]
+        B3 --> B5["限幅 0 ~ 3599"]
+        B4 --> B5
+        B5 --> B7["set_pwm(TIM1, 1, buck_pwm)<br/>更新占空比，驱动 BUCK"]
+    end
+</div>
+</div>
+
+<h2>四、用到的模块清单</h2>
+<div class="card">
+<div>
+  <span class="tag">main.c — 主状态机</span>
+  <span class="tag">delay.c — SysTick 延时</span>
+  <span class="tag">sys.c — 基础类型/时钟</span>
+  <span class="tag">adc.c — ADC1+DMA 采样</span>
+  <span class="tag">timer.c — TIM1 PWM + 稳压中断</span>
+  <span class="tag">timer3.c — TIM3 采样定时</span>
+  <span class="tag">oled.c — OLED 显示</span>
+  <span class="tag">show.c — 参数显示界面</span>
+  <span class="tag">sw.c — 继电器/芯片使能</span>
+  <span class="tag">key.c — 按键扫描</span>
+  <span class="tag">stm32f10x_it.c — TIM3 中断服务</span>
+  <span class="tag">CORE/startup — 启动+时钟</span>
+  <span class="tag">STLIB — RCC/GPIO/TIM/ADC/DMA 标准库</span>
+</div>
+<div style="margin-top:12px; font-size:13px; color:#6b7280;">
+未参与本次编译、因此流程图里未画：<br>
+<span class="tag unused">mqtt.c</span>
+<span class="tag unused">wifi.c</span>
+<span class="tag unused">usart1/2.c</span>
+<span class="tag unused">pid.c</span>
+<span class="tag unused">encoder.c</span>
+<span class="tag unused">dht11.c</span>
+<span class="tag unused">beep.c</span>
+<span class="tag unused">ds18b20.c</span>
+<span class="tag unused">HMAC(md5/sha1)</span>
+<span class="tag unused">timer1/2/4.c</span>
+（OBJ 目录里还有这些的旧 .o 文件，属历史遗留）
+</div>
+</div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', flowchart: { curve: 'basis' } });
+</script>
+</body>
+</html>
